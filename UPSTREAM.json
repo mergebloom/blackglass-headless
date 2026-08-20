@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/obsidianmd/obsidian-headless",
+  "revision": "0d0ec4364bfde6c715c539cf3555ff8272bb7a58",
+  "version": "0.0.14",
+  "artifact": {
+    "path": "cli.js",
+    "bytes": 218234,
+    "sha256": "c6307dc72c00bcf6f22093fb3e0eb91fdc417fc9dd05884ff2c36e5a19cd0196"
+  }
+}

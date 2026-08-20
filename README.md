@@ -1,295 +1,126 @@
-# Obsidian Headless
+# Blackglass Headless
 
-Headless client for [Obsidian Sync](https://obsidian.md/sync) and [Obsidian Publish](https://obsidian.md/publish).
-Sync and publish your vaults from the command line without the desktop app.
+Blackglass Headless is a command-line Sync client for a self-hosted
+[Blackglass Server](https://github.com/mergebloom/blackglass-server). It runs
+without a desktop session or GUI, so it can keep a Markdown vault synchronized
+on a Linux server, NAS, CI worker, or macOS terminal.
 
-Requires Node.js 22 or later.
+This fork preserves the official Obsidian Headless bundle unchanged. A small
+launcher verifies the exact reviewed upstream release, applies the Blackglass
+compatibility incisions in memory, uses an isolated profile, and fails closed
+when upstream code differs. Sync data hosts continue to come from the selected
+Blackglass Server. Obsidian Publish commands are disabled.
+
+## Supported baseline
+
+- Blackglass Headless 0.1.0
+- Obsidian Headless 0.0.14, exact upstream commit and SHA-256 documented in
+  [UPSTREAM.md](UPSTREAM.md)
+- Node.js 22 or later
+- Runtime and Sync validation on Linux amd64, Linux arm64, and Apple Silicon
+  macOS against Blackglass Server 0.6.1
+- Blackglass Sync only; no GUI and no Publish support
+
+Compatibility is claimed only for the exact upstream identity that passes the
+Blackglass conformance checks.
 
 ## Install
 
-```bash
-npm install -g obsidian-headless
-```
-
-## Authentication
-
-Login interactively:
+Install Node.js 22 or later, then install directly from the fork:
 
 ```bash
-ob login
+npm install --global github:mergebloom/blackglass-headless
 ```
 
-If already logged in, `ob login` displays your account info. To switch accounts, pass `--email` and/or `--password` to log in again.
-
-## Quick start
+For development:
 
 ```bash
-# Login
-ob login
-
-# List your remote vaults
-ob sync-list-remote
-
-# Setup a vault for syncing
-cd ~/vaults/my-vault
-ob sync-setup --vault "My Vault"
-
-# Run a one-time sync
-ob sync
-
-# Run continuous sync (watches for changes)
-ob sync --continuous
+git clone https://github.com/mergebloom/blackglass-headless.git
+cd blackglass-headless
+corepack pnpm install --frozen-lockfile
+pnpm check
+npm link
 ```
 
-## JSON output
+## Configure and use
 
-Most commands accept a `--json` flag that prints machine-readable JSON to stdout.
-In JSON mode, progress messages are suppressed and errors are written to stderr with a non-zero exit code.
-Interactive prompts for passwords are also disabled.
+Point the isolated Blackglass profile at your own control origin:
 
-## Commands
-
-### `ob login`
-
-Login to your Obsidian account, or display login status if already logged in.
-
-```
-ob login [--email <email>] [--password <password>] [--mfa <code>]
+```bash
+bgh configure --server https://sync.example.com
+bgh configure --show
+bgh login
+bgh sync-list-remote
 ```
 
-All options are interactive when omitted — email and password are prompted, and 2FA is requested automatically if enabled on the account.
+Create or connect a vault and start continuous background synchronization:
 
-### `ob logout`
-
-Logout and clear stored credentials.
-
-### `ob sync-list-remote`
-
-List all remote vaults available to your account, including shared vaults.
-
-```
-ob sync-list-remote [--json]
+```bash
+mkdir -p ~/vaults/notes
+cd ~/vaults/notes
+bgh sync-setup --vault "Notes" --device-name "headless-server"
+bgh sync --continuous
 ```
 
-### `ob sync-list-local`
+For a one-off invocation, `--server` overrides the saved origin:
 
-List locally configured vaults and their paths.
-
-```
-ob sync-list-local [--json]
+```bash
+bgh --server https://sync.example.com sync-list-remote --json
 ```
 
-### `ob sync-create-remote`
+`BLACKGLASS_CONTROL_ORIGIN` is the non-persistent server override and
+`BLACKGLASS_AUTH_TOKEN` is the optional non-persistent authentication token.
+HTTPS is required except for loopback development. Credentials, paths, query
+parameters, and fragments are rejected in server origins.
 
-Create a new remote vault.
+Authentication and server selection are stored under
+`~/.config/blackglass-headless` on Linux (or `$XDG_CONFIG_HOME`) and
+`~/.blackglass-headless` elsewhere. Blackglass does not reuse the upstream
+Obsidian Headless profile.
 
-```
-ob sync-create-remote --name "Vault Name" [--encryption <standard|end-to-end>] [--password <password>] [--region <region>]
-```
+One profile maps a remote vault to one local folder. To test or run a second
+local copy of the same remote vault on one host, give it a separate operating
+system home/profile (for example, a separate container or service account).
+Reusing one profile for two folders would reuse the first folder's Sync state.
 
-| Option | Description                                              |
-|---|----------------------------------------------------------|
-| `--name` | Vault name (required)                                    |
-| `--encryption` | `standard` for managed encryption, `end-to-end` for end-to-end |
-| `--password` | End-to-end encryption password (prompted if omitted)     |
-| `--region` | Server region (automatic if omitted)                     |
+The pinned upstream package does not include a Linux native module for file
+birth times. Linux Sync content is byte-identical, but creation-time metadata
+may not be preserved.
 
-### `ob sync-setup`
+Run `bgh --help` for the upstream-compatible Sync command reference.
 
-Set up sync between a local vault and a remote vault.
+## Compatibility validation
 
-```
-ob sync-setup --vault <id-or-name> [--path <local-path>] [--password <password>] [--device-name <name>] [--config-dir <name>] [--json]
-```
+The fast suite verifies the exact upstream file and every incision, config-file
+permissions, origin validation, Publish blocking, and launcher execution:
 
-| Option | Description                                                     |
-|---|-----------------------------------------------------------------|
-| `--vault` | Remote vault ID or name (required)                              |
-| `--path` | Local directory (default: current directory)                    |
-| `--password` | E2E encryption password (prompted if omitted)                   |
-| `--device-name` | Device name to identify this client in the sync version history |
-| `--config-dir` | Config directory name (default: `.obsidian`)                    |
-| `--json` | Output in JSON format               |
-
-With `--json`, the password prompt is disabled.
-For end-to-end encrypted vaults, `--password` is required.
-
-### `ob sync`
-
-Run sync for a configured vault.
-
-```
-ob sync [--path <local-path>] [--continuous]
+```bash
+corepack pnpm check
 ```
 
-| Option | Description |
-|---|---|
-| `--path` | Local vault path (default: current directory) |
-| `--continuous` | Run continuously, watching for changes |
+The opt-in server E2E creates a disposable account and custom-E2EE vault,
+uploads Markdown and binary data, recovers it into a clean profile, proves
+continuous bidirectional Sync and deletion, restarts the server, and verifies a
+backup:
 
-### `ob sync-config`
-
-View or change sync settings for a vault.
-
-```
-ob sync-config [--path <local-path>] [options]
+```bash
+BLACKGLASS_SERVER_BINARY=/path/to/blackglass-server \
+  corepack pnpm test:e2e
 ```
 
-Run with no options to display the current configuration.
+## Project boundaries
 
-| Option | Description |
-|---|---|
-| `--path` | Local vault path (default: current directory) |
-| `--mode` | Sync mode: `bidirectional` (default), `pull-only` (only download, ignore local changes), or `mirror-remote` (only download, revert local changes) |
-| `--conflict-strategy` | `merge` or `conflict` |
-| `--file-types` | Attachment types to sync: `image`, `audio`, `video`, `pdf`, `unsupported` (comma-separated, empty to clear) |
-| `--configs` | Config categories to sync: `app`, `appearance`, `appearance-data`, `hotkey`, `core-plugin`, `core-plugin-data`, `community-plugin`, `community-plugin-data` (comma-separated, empty to disable config syncing) |
-| `--excluded-folders` | Folders to exclude (comma-separated, empty to clear) |
-| `--device-name` | Device name to identify this client in the sync version history |
-| `--config-dir` | Config directory name (default: `.obsidian`) |
-| `--json` | Output in JSON format |
+- [Blackglass Server](https://github.com/mergebloom/blackglass-server) owns the
+  Rust/SQLite service, deployment, migrations, backups, and Linux server
+  artifacts.
+- [Blackglass Bridge](https://github.com/mergebloom/blackglass-bridge) owns the
+  adapted graphical desktop client and the broader conformance tooling.
+- This repository owns the no-GUI command-line adapter and its exact upstream
+  baseline.
 
-### `ob sync-status`
-
-Show sync status and configuration for a vault.
-
-```
-ob sync-status [--path <local-path>] [--json]
-```
-
-### `ob sync-unlink`
-
-Disconnect a vault from sync and remove stored credentials.
-
-```
-ob sync-unlink [--path <local-path>]
-```
-
-### `ob publish-list-sites`
-
-List all publish sites available to your account, including shared sites.
-
-```
-ob publish-list-sites [--json]
-```
-
-### `ob publish-create-site`
-
-Create a new publish site.
-
-```
-ob publish-create-site --slug <slug> [--json]
-```
-
-| Option | Description |
-|---|---|
-| `--slug` | Site slug used in the publish URL (required) |
-| `--json` | Output in JSON format |
-
-### `ob publish-setup`
-
-Connect a local vault to a publish site.
-
-```
-ob publish-setup --site <id-or-slug> [--path <local-path>] [--json]
-```
-
-| Option | Description |
-|---|---|
-| `--site` | Site ID or slug (required) |
-| `--path` | Local vault path (default: current directory) |
-| `--json` | Output in JSON format |
-
-### `ob publish`
-
-Publish vault changes to a connected site. Scans for changes by comparing local file hashes against the remote site, then uploads new/changed files and removes deleted ones.
-
-Files are selected for publishing based on: frontmatter `publish: true/false` flag (highest priority), excluded/included folders (configured via `publish-config`), and the `--all` flag for untagged files.
-
-```
-ob publish [--path <local-path>] [--dry-run] [--yes] [--all] [--json]
-```
-
-| Option | Description |
-|---|---|
-| `--path` | Local vault path (default: current directory) |
-| `--dry-run` | Show changes without publishing |
-| `--yes` | Publish without prompting for confirmation |
-| `--all` | Include files without a publish flag |
-| `--json` | Output in JSON format |
-
-With `--json`, the confirmation prompt is disabled.
-Unless `--yes` is passed, the command acts as a dry run and only reports pending changes.
-
-### `ob publish-config`
-
-View or change publish settings for a vault.
-
-```
-ob publish-config [--path <local-path>] [--includes <folders>] [--excludes <folders>] [--json]
-```
-
-Run with no options to display the current configuration.
-
-| Option | Description |
-|---|---|
-| `--path` | Local vault path (default: current directory) |
-| `--includes` | Folders to include, comma-separated (empty string to clear) |
-| `--excludes` | Folders to exclude, comma-separated (empty string to clear) |
-| `--json` | Output in JSON format |
-
-### `ob publish-site-options`
-
-View or update remote site options (appearance, navigation, etc.). Run with no options to display the current settings.
-
-```
-ob publish-site-options [--path <local-path>] [options]
-```
-
-| Option | Description |
-|---|---|
-| `--path` | Local vault path (default: current directory) |
-| `--site-name <name>` | Site name |
-| `--index-file <path>` | Home page file path |
-| `--logo <path>` | Logo file path (empty string to clear) |
-| `--default-theme <theme>` | Default theme: `light` or `dark` |
-| `--show-navigation <bool>` | Show navigation sidebar |
-| `--show-graph <bool>` | Show graph view |
-| `--show-outline <bool>` | Show table of contents |
-| `--show-search <bool>` | Show search |
-| `--show-backlinks <bool>` | Show backlinks |
-| `--show-hover-preview <bool>` | Show hover preview |
-| `--show-theme-toggle <bool>` | Show theme toggle |
-| `--readable-line-length <bool>` | Readable line length |
-| `--strict-line-breaks <bool>` | Strict line breaks |
-| `--hide-title <bool>` | Hide inline title |
-| `--sliding-window <bool>` | Sliding window mode |
-| `--nav-order <paths>` | Navigation ordering, comma-separated paths in display order (empty string to clear) |
-| `--nav-hidden <items>` | Navigation hidden items, comma-separated paths (empty string to clear) |
-| `--json` | Output in JSON format |
-
-### `ob publish-unlink`
-
-Disconnect a vault from a publish site.
-
-```
-ob publish-unlink [--path <local-path>]
-```
-
-## Native modules
-
-### btime
-
-The `btime` directory contains a prebuilt native N-API addon for setting file creation time (birthtime) on Windows and macOS.
-This is used when downloading files from the server to preserve their original creation timestamps.
-
-Since it targets N-API version 3, the compiled `.node` binaries are ABI-stable and work across Node.js versions without recompilation.
-
-On Linux, birthtime is not supported — the addon is not included and sync operates normally without it.
-
-Prebuilt binaries are included for:
-- `win32-x64`
-- `win32-arm64`
-- `win32-ia32`
-- `darwin-x64`
-- `darwin-arm64`
+Blackglass is an independent research project exploring frontier LLM
+capabilities in software analysis, compatibility engineering, implementation,
+and end-to-end validation. Obsidian is a third-party product; Blackglass is not
+endorsed by Obsidian. This fork retains the upstream `UNLICENSED` designation
+and provenance. Review the upstream terms before use; this note is not legal
+advice.
