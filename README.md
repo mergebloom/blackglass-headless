@@ -1,5 +1,12 @@
 # Blackglass Headless
 
+An independent Rust CLI and local stdio MCP client is available as a candidate
+under [native/](native/README.md). It uses the same Blackglass Sync service but
+does not run or ship the upstream JavaScript bundle. The existing Node-based
+adapter described below remains the reference client while native release
+qualification grows. Both executables use the `bgh` name; install only the one
+whose instructions you intend to follow.
+
 Blackglass Headless is a command-line Sync client for a self-hosted
 [Blackglass Server](https://github.com/mergebloom/blackglass-server). It runs
 without a desktop session or GUI, so it can keep a Markdown vault synchronized
