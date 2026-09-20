@@ -1,12 +1,13 @@
 # Native Blackglass Headless client
 
 Planning baseline: 2026-09-19. Implementation is in progress under `native/`.
-The initial native Rust crypto/one-shot Sync/CLI/local stdio MCP vertical slice
-passed disposable Server/reference-client interoperability tests and packaged
-Linux amd64/arm64 Sync smoke tests. Subsequent local work adds a persistent
-service, a private SQLite applied-state journal, and a negotiated conditional
-push extension in Server. Those changes have not been packaged or qualified on
-both Linux architectures. The staged gates below remain the release criteria.
+The Rust crypto/Sync/CLI/local stdio MCP vertical slice, persistent service,
+private SQLite applied-state journal, and negotiated conditional push extension
+have passed disposable interoperability tests. Source-bound Linux amd64 and
+arm64 candidates passed packaged-client smoke tests, including service recovery
+after forced termination. See the [current candidate evidence](../native-service-candidate-2026-09-20.md)
+for exact hashes and remaining gaps. The staged gates below remain release
+criteria; these candidates are not a release qualification.
 
 ## Outcome and boundaries
 
