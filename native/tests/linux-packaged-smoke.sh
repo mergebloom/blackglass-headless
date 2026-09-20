@@ -114,6 +114,34 @@ until "$client" --profile "$profile_b" sync once >/dev/null 2>&1 && [ -e "$test_
 done
 cmp "$test_dir/vault-a/background.md" "$test_dir/vault-b/background.md"
 awk '/^VmRSS:/ {print "idle service " $2 " " $3}' "/proc/$service_pid/status"
+old_socket_inode=$(stat -c %i "$test_dir/profile-a.sock")
+kill -KILL "$service_pid"
+wait "$service_pid" 2>/dev/null || true
+service_pid=
+test -S "$test_dir/profile-a.sock"
+"$client" --profile "$profile_a" service run --interval-seconds 1 > "$test_dir/service-restarted.log" 2>&1 &
+service_pid=$!
+count=0
+until [ -S "$test_dir/profile-a.sock" ] &&
+      [ "$(stat -c %i "$test_dir/profile-a.sock")" != "$old_socket_inode" ]; do
+  kill -0 "$service_pid" 2>/dev/null || { echo 'service did not reclaim stale socket' >&2; exit 1; }
+  count=$((count + 1))
+  if [ "$count" -ge 100 ]; then echo 'stale service socket was not replaced' >&2; exit 1; fi
+  sleep 0.1
+done
+count=0
+until printf '# Sync after service kill\n' | "$client" --profile "$profile_a" note write after-kill.md >/dev/null 2>&1; do
+  count=$((count + 1))
+  if [ "$count" -ge 100 ]; then echo 'restarted service did not accept writes' >&2; exit 1; fi
+  sleep 0.1
+done
+count=0
+until "$client" --profile "$profile_b" sync once >/dev/null 2>&1 && [ -e "$test_dir/vault-b/after-kill.md" ]; do
+  count=$((count + 1))
+  if [ "$count" -ge 100 ]; then echo 'restarted service did not sync' >&2; exit 1; fi
+  sleep 0.1
+done
+cmp "$test_dir/vault-a/after-kill.md" "$test_dir/vault-b/after-kill.md"
 kill -TERM "$service_pid"
 wait "$service_pid"
 service_pid=

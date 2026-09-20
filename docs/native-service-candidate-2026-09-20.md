@@ -41,19 +41,20 @@ describes different binaries and remains historical evidence.
   relocation checks and a disposable two-profile packaged-client smoke test
   against current Server source. It covers bidirectional notes, deletion,
   restart, verified backup, ciphertext absence, persistent service background
-  Sync, and clean socket shutdown. Same-builder rebuilds yield byte-identical
+  Sync, stale-socket recovery after a forced service kill, and clean socket
+  shutdown. Same-builder rebuilds yield byte-identical
   executables and binary archives. This is repeatability on those builders,
   not cross-environment reproducibility.
-- Idle service RSS during the latest smoke runs: 7,140 KiB (arm64) and 14,540 KiB
+- Idle service RSS during the latest smoke runs: 7,140 KiB (arm64) and 14,532 KiB
   (amd64). These are observations, not resource budgets or peak measurements.
 
 | Asset | SHA-256 |
 | --- | --- |
-| Source archive, both architectures | `97ee724efb8b587b6d8069f1a56d9a313fdd4e1f475a223df2b3c14634fb39d1` |
-| `native/dist/dev-current-arm64/bgh-0.1.0-linux-arm64` | `ac54e6af5576a6ac543a4566056472a15c3139574585fc365c35e39c53e11282` |
-| `native/dist/dev-current-arm64/bgh-0.1.0-linux-arm64.tar.gz` | `5786476db21eb0f91b9ebf0c2d98e18e9da234378bbdb8c98b7956a72a56d4a4` |
-| `native/dist/dev-current-amd64/bgh-0.1.0-linux-amd64` | `6415b7f2f03fc7538f1fa1957bec346afd67cdbb8aeb7ce9189350a1d8003b77` |
-| `native/dist/dev-current-amd64/bgh-0.1.0-linux-amd64.tar.gz` | `cfe43a7388b00cfe51eaf88934f0738a5d999f3ecfd00a5232a5c8de2f963252` |
+| Source archive, both architectures | `81e347eb31f9ef0ad03b3f2f39998e373255612c9281687768146795f23c99fb` |
+| `native/dist/dev-current-arm64/bgh-0.1.0-linux-arm64` | `e1747474eb062291e0937229f9c711f6d16c700a3470947b35fd2416eec80f91` |
+| `native/dist/dev-current-arm64/bgh-0.1.0-linux-arm64.tar.gz` | `f61d2ff38cc3fb932795cb2bae16e83190730e7892349f09f193d6297ef9eaef` |
+| `native/dist/dev-current-amd64/bgh-0.1.0-linux-amd64` | `c45d7c284c1793f9cb7f9e11b7f4fe6e7c41b481644f317eaf93f878048d67ee` |
+| `native/dist/dev-current-amd64/bgh-0.1.0-linux-amd64.tar.gz` | `e0d6b3ca87f1b024dc1bece64f8a8c4c0ff3afcf11d2f913a403ebc071ece5d7` |
 
 ## Release blockers
 

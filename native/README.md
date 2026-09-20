@@ -138,9 +138,9 @@ are not a replacement for the full release matrix in the
 On Linux, `sh native/tests/package-relocation.sh PACKAGE_DIRECTORY` verifies
 relocated checksums, source identity, and notices. Then
 `sh native/tests/linux-packaged-smoke.sh /path/to/blackglass-server
-/path/to/bgh` exercises two native profiles, deletion, restart, backup, and
-ciphertext storage against a disposable loopback server. It uses only synthetic
-test data.
+/path/to/bgh` exercises two native profiles, deletion, restart, backup,
+ciphertext storage, background Sync, and service recovery after a forced kill
+against a disposable loopback server. It uses only synthetic test data.
 
 Blackglass is independent of and not endorsed by Obsidian. Users must supply
 their own legitimate Obsidian installation for Bridge; this native client
