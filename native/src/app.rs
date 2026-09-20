@@ -48,7 +48,18 @@ enum Command {
         #[arg(long)]
         auto_sync_seconds: Option<u64>,
     },
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
     BuildInfo,
+}
+#[derive(Subcommand)]
+enum ServiceCommand {
+    Run {
+        #[arg(long, default_value_t = 30)]
+        interval_seconds: u64,
+    },
 }
 #[derive(Subcommand)]
 enum VaultCommand {
@@ -285,11 +296,37 @@ pub async fn run() -> Result<()> {
         return Ok(());
     }
     let path = profile_path(&cli)?;
+    #[cfg(unix)]
+    if !matches!(&cli.command, Command::Service { .. }) && service_available(&path).await {
+        if let Command::Mcp { auto_sync_seconds } = &cli.command {
+            return mcp_proxy(&path, *auto_sync_seconds).await;
+        }
+        if let Some(request) = command_service_request(&cli.command)? {
+            let result = service_call(&path, request).await?;
+            match &cli.command {
+                Command::Sync {
+                    command: SyncCommand::Once,
+                } => println!(
+                    "synchronized through revision {}",
+                    result["applied_revision"]
+                ),
+                Command::Sync {
+                    command: SyncCommand::Status,
+                } => println!(
+                    "{}: applied revision {}",
+                    result["root"].as_str().unwrap_or(""),
+                    result["applied_revision"]
+                ),
+                _ => println!("{}", result),
+            }
+            return Ok(());
+        }
+    }
     let _lock = lock_profile(&path)?;
     let mut profile = read_profile(&path)?;
     let needs_vault_lock = matches!(
         &cli.command,
-        Command::Sync { .. } | Command::Note { .. } | Command::Mcp { .. }
+        Command::Sync { .. } | Command::Note { .. } | Command::Mcp { .. } | Command::Service { .. }
     );
     let _vault_lock = if needs_vault_lock {
         let vault = profile.vault.as_ref().context("no vault connected")?;
@@ -438,13 +475,18 @@ pub async fn run() -> Result<()> {
                 let server = profile.server.clone();
                 let token = token(&profile)?.to_owned();
                 let vault = profile.vault.as_mut().context("no vault connected")?;
-                let result = crate::sync::once(&server, &token, vault).await;
-                write_profile(&path, &profile)?;
+                let mut journal = crate::state::Journal::open(&path, vault)?;
+                let result =
+                    crate::sync::once_with_checkpoint(&server, &token, vault, &mut |state| {
+                        journal.checkpoint(state)
+                    })
+                    .await;
                 let revision = result?;
                 println!("synchronized through revision {revision}");
             }
             SyncCommand::Status => {
-                let vault = profile.vault.as_ref().context("no vault connected")?;
+                let vault = profile.vault.as_mut().context("no vault connected")?;
+                let _journal = crate::state::Journal::open(&path, vault)?;
                 println!(
                     "{}: applied revision {}",
                     vault.root.display(),
@@ -459,8 +501,12 @@ pub async fn run() -> Result<()> {
                     let server = profile.server.clone();
                     let token = token(&profile)?.to_owned();
                     let vault = profile.vault.as_mut().context("no vault connected")?;
-                    let result = crate::sync::once(&server, &token, vault).await;
-                    write_profile(&path, &profile)?;
+                    let mut journal = crate::state::Journal::open(&path, vault)?;
+                    let result =
+                        crate::sync::once_with_checkpoint(&server, &token, vault, &mut |state| {
+                            journal.checkpoint(state)
+                        })
+                        .await;
                     println!("synchronized through revision {}", result?);
                     tokio::select! {
                         _ = tokio::signal::ctrl_c() => break,
@@ -488,9 +534,505 @@ pub async fn run() -> Result<()> {
             };
             println!("{}", serde_json::to_string(&result)?);
         }
-        Command::Mcp { auto_sync_seconds } => mcp(profile, &path, auto_sync_seconds).await?,
+        Command::Mcp { auto_sync_seconds } => {
+            let vault = profile.vault.as_mut().context("no vault connected")?;
+            drop(crate::state::Journal::open(&path, vault)?);
+            mcp(profile, &path, auto_sync_seconds).await?
+        }
+        Command::Service {
+            command: ServiceCommand::Run { interval_seconds },
+        } => service(profile, &path, interval_seconds).await?,
         Command::BuildInfo => unreachable!(),
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn service_socket(path: &Path) -> PathBuf {
+    path.with_extension("sock")
+}
+
+#[cfg(unix)]
+async fn service_available(path: &Path) -> bool {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        tokio::net::UnixStream::connect(service_socket(path)),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok())
+}
+
+#[cfg(unix)]
+fn command_service_request(command: &Command) -> Result<Option<Value>> {
+    Ok(match command {
+        Command::Sync {
+            command: SyncCommand::Once,
+        } => Some(json!({"op":"sync_once"})),
+        Command::Sync {
+            command: SyncCommand::Status,
+        } => Some(json!({"op":"sync_status"})),
+        Command::Note { command } => Some(match command {
+            NoteCommand::List => json!({"op":"note_list"}),
+            NoteCommand::Search { query } => json!({"op":"note_search","query":query}),
+            NoteCommand::Read { path } => json!({"op":"note_read","path":path}),
+            NoteCommand::Write {
+                path,
+                expected_sha256,
+            } => {
+                let mut content = String::new();
+                io::stdin()
+                    .take(1024 * 1024 + 1)
+                    .read_to_string(&mut content)?;
+                if content.len() > 1024 * 1024 {
+                    bail!("note exceeds 1 MiB limit");
+                }
+                json!({"op":"note_write","path":path,"content":content,"expected_sha256":expected_sha256})
+            }
+        }),
+        _ => None,
+    })
+}
+
+#[cfg(unix)]
+async fn service_call(path: &Path, request: Value) -> Result<Value> {
+    use tokio::io::AsyncWriteExt;
+    let mut stream = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::net::UnixStream::connect(service_socket(path)),
+    )
+    .await
+    .context("local service connection timed out")??;
+    let body = serde_json::to_vec(&request)?;
+    if body.len() > 2 * 1024 * 1024 {
+        bail!("local service request exceeds 2 MiB");
+    }
+    stream.write_all(&body).await?;
+    stream.write_all(b"\n").await?;
+    let mut reader = tokio::io::BufReader::new(stream);
+    let mut response = Vec::new();
+    let mut oversized = false;
+    let frame = tokio::time::timeout(
+        std::time::Duration::from_secs(16 * 60),
+        read_mcp_frame(&mut reader, &mut response, &mut oversized),
+    )
+    .await
+    .context("local service response timed out")??
+    .context("local service returned an empty response")?;
+    if frame.1 {
+        bail!("local service returned an empty or oversized response");
+    }
+    let result: Value = serde_json::from_slice(&frame.0)?;
+    if result["ok"] != true {
+        bail!(
+            "{}",
+            result["error"].as_str().unwrap_or("local service failed")
+        );
+    }
+    Ok(result["value"].clone())
+}
+
+#[cfg(unix)]
+struct SocketLease {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+impl Drop for SocketLease {
+    fn drop(&mut self) {
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(metadata) = fs::symlink_metadata(&self.path)
+            && (metadata.dev(), metadata.ino()) == (self.device, self.inode)
+        {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn check_service_peer(stream: &tokio::net::UnixStream) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let mut credentials = libc::ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
+        let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let result = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&mut credentials as *mut libc::ucred).cast(),
+                &mut length,
+            )
+        };
+        if result != 0
+            || length as usize != std::mem::size_of::<libc::ucred>()
+            || credentials.uid != unsafe { libc::geteuid() }
+        {
+            bail!("local service peer is not the profile owner");
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = stream;
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn send_service_result(
+    stream: &mut tokio::net::UnixStream,
+    result: Result<Value>,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let response = match result {
+        Ok(value) => json!({"ok":true,"value":value}),
+        Err(error) => json!({"ok":false,"error":error.to_string()}),
+    };
+    let bytes = serde_json::to_vec(&response)?;
+    stream.write_all(&bytes).await?;
+    stream.write_all(b"\n").await?;
+    stream.flush().await?;
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn read_service_request(
+    stream: tokio::net::UnixStream,
+) -> Result<(tokio::net::UnixStream, Value)> {
+    let mut reader = tokio::io::BufReader::new(stream);
+    let mut line = Vec::new();
+    let mut oversized = false;
+    let frame = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        read_mcp_frame(&mut reader, &mut line, &mut oversized),
+    )
+    .await
+    .context("local service request timed out")??
+    .context("local service request was empty")?;
+    if frame.1 {
+        bail!("local service request exceeds 2 MiB");
+    }
+    Ok((reader.into_inner(), serde_json::from_slice(&frame.0)?))
+}
+
+#[cfg(unix)]
+fn service_note(profile: &Profile, request: &Value, syncing: bool) -> Result<Value> {
+    let vault = profile.vault.as_ref().context("no vault connected")?;
+    let root = &vault.root;
+    match request["op"].as_str().unwrap_or("") {
+        "sync_status" => {
+            Ok(json!({"root":root,"applied_revision":vault.applied_version,"in_progress":syncing}))
+        }
+        "note_list" if !syncing => crate::notes::list(root),
+        "note_search" if !syncing => {
+            crate::notes::search(root, request["query"].as_str().context("query required")?)
+        }
+        "note_read" if !syncing => {
+            crate::notes::read(root, request["path"].as_str().context("path required")?)
+        }
+        "note_write" if !syncing => crate::notes::write(
+            root,
+            request["path"].as_str().context("path required")?,
+            request["content"].as_str().context("content required")?,
+            request["expected_sha256"].as_str(),
+        ),
+        "note_list" | "note_search" | "note_read" | "note_write" => {
+            bail!("Sync is running; retry note operation")
+        }
+        _ => bail!("unsupported local service operation"),
+    }
+}
+
+#[cfg(unix)]
+async fn service(mut profile: Profile, path: &Path, interval_seconds: u64) -> Result<()> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+    if !(1..=3600).contains(&interval_seconds) {
+        bail!("interval must be 1-3600 seconds");
+    }
+    let vault = profile.vault.as_mut().context("no vault connected")?;
+    drop(crate::state::Journal::open(path, vault)?);
+    let socket = service_socket(path);
+    match fs::symlink_metadata(&socket) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_socket() || metadata.uid() != unsafe { libc::geteuid() } {
+                bail!("local service socket path is occupied by an unexpected file");
+            }
+            if tokio::net::UnixStream::connect(&socket).await.is_ok() {
+                bail!("local service is already running");
+            }
+            // The caller holds the exclusive profile lock, so a same-owner
+            // socket that cannot accept connections is a crashed service lease.
+            fs::remove_file(&socket)?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let listener = tokio::net::UnixListener::bind(&socket)?;
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+    let metadata = fs::symlink_metadata(&socket)?;
+    let _lease = SocketLease {
+        path: socket,
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    };
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_seconds));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut active_sync: Option<McpSync> = None;
+    let mut waiting: Option<tokio::net::UnixStream> = None;
+    let mut failures = 0u32;
+    let mut next_retry = tokio::time::Instant::now();
+    loop {
+        enum Event {
+            Accept(std::io::Result<(tokio::net::UnixStream, tokio::net::unix::SocketAddr)>),
+            Tick,
+            SyncDone(std::result::Result<(VaultConfig, Result<i64>), tokio::task::JoinError>),
+            Stop,
+        }
+        let event = tokio::select! {
+            accepted = listener.accept() => Event::Accept(accepted),
+            _ = ticker.tick() => Event::Tick,
+            done = async { (&mut active_sync.as_mut().expect("guarded service Sync").worker).await }, if active_sync.is_some() => Event::SyncDone(done),
+            _ = tokio::signal::ctrl_c() => Event::Stop,
+            _ = terminate.recv() => Event::Stop,
+        };
+        match event {
+            Event::Stop => break,
+            Event::Tick => {
+                if active_sync.is_none() && tokio::time::Instant::now() >= next_retry {
+                    match start_mcp_sync(&profile, path) {
+                        Ok(worker) => active_sync = Some(worker),
+                        Err(error) => {
+                            failures = failures.saturating_add(1);
+                            let seconds = interval_seconds
+                                .saturating_mul(1u64 << failures.min(5))
+                                .min(900);
+                            next_retry = tokio::time::Instant::now()
+                                + std::time::Duration::from_secs(seconds);
+                            eprintln!("background Sync could not start: {error:#}");
+                        }
+                    }
+                }
+            }
+            Event::SyncDone(done) => {
+                active_sync = None;
+                let result = finish_mcp_sync(
+                    &mut profile,
+                    path,
+                    done.context("service Sync worker failed")?,
+                )?;
+                if result.is_ok() {
+                    failures = 0;
+                    next_retry = tokio::time::Instant::now();
+                } else {
+                    failures = failures.saturating_add(1);
+                    let seconds = interval_seconds
+                        .saturating_mul(1u64 << failures.min(5))
+                        .min(900);
+                    next_retry =
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(seconds);
+                }
+                if let Some(mut stream) = waiting.take() {
+                    send_service_result(
+                        &mut stream,
+                        result.map(|revision| json!({"applied_revision":revision})),
+                    )
+                    .await?;
+                } else if let Err(error) = result {
+                    eprintln!("background Sync failed: {error:#}");
+                }
+            }
+            Event::Accept(accepted) => {
+                let (stream, _) = accepted?;
+                if let Err(error) = check_service_peer(&stream) {
+                    let mut stream = stream;
+                    let _ = send_service_result(&mut stream, Err(error)).await;
+                    continue;
+                }
+                let (mut stream, request) = match read_service_request(stream).await {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                };
+                match request["op"].as_str().unwrap_or("") {
+                    "sync_once" => {
+                        if active_sync.is_some() {
+                            send_service_result(
+                                &mut stream,
+                                Err(anyhow::anyhow!("Sync is already running")),
+                            )
+                            .await?;
+                        } else {
+                            match start_mcp_sync(&profile, path) {
+                                Ok(worker) => {
+                                    active_sync = Some(worker);
+                                    waiting = Some(stream);
+                                }
+                                Err(error) => send_service_result(&mut stream, Err(error)).await?,
+                            }
+                        }
+                    }
+                    "sync_cancel" => {
+                        let result = if let Some(worker) = &active_sync {
+                            worker.cancel.send(true)?;
+                            Ok(
+                                json!({"cancelled":true,"outcome":"indeterminate until Sync settles"}),
+                            )
+                        } else {
+                            Err(anyhow::anyhow!("no Sync is running"))
+                        };
+                        send_service_result(&mut stream, result).await?;
+                    }
+                    _ => {
+                        let result = service_note(&profile, &request, active_sync.is_some());
+                        send_service_result(&mut stream, result).await?;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(worker) = active_sync {
+        let _ = worker.cancel.send(true);
+        let _ = finish_mcp_sync(
+            &mut profile,
+            path,
+            worker
+                .worker
+                .await
+                .context("service Sync worker failed at shutdown")?,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn service(_profile: Profile, _path: &Path, _interval_seconds: u64) -> Result<()> {
+    bail!("local service requires Unix sockets")
+}
+
+#[cfg(unix)]
+fn mcp_service_request(name: &str, args: &Value) -> Result<Value> {
+    Ok(match name {
+        "note_list" => json!({"op":"note_list"}),
+        "note_read" => json!({"op":"note_read","path":args["path"]}),
+        "note_search" => json!({"op":"note_search","query":args["query"]}),
+        "note_write" => {
+            json!({"op":"note_write","path":args["path"],"content":args["content"],"expected_sha256":args["expected_sha256"]})
+        }
+        "sync_run" => json!({"op":"sync_once"}),
+        "sync_status" => json!({"op":"sync_status"}),
+        "sync_cancel" => json!({"op":"sync_cancel"}),
+        _ => bail!("unknown tool"),
+    })
+}
+
+#[cfg(unix)]
+async fn mcp_proxy(path: &Path, auto_sync_seconds: Option<u64>) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    if auto_sync_seconds.is_some_and(|seconds| !(1..=3600).contains(&seconds)) {
+        bail!("auto-sync interval must be 1-3600 seconds");
+    }
+    // The independent service owns polling; this process only adapts stdio.
+    let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
+    let mut frame = Vec::new();
+    let mut oversized = false;
+    let mut stdout = tokio::io::stdout();
+    let mut pending: Option<(Value, tokio::task::JoinHandle<Result<Value>>)> = None;
+    loop {
+        enum Event {
+            Line(Option<(Vec<u8>, bool)>),
+            Done(std::result::Result<Result<Value>, tokio::task::JoinError>),
+        }
+        let event = tokio::select! {
+            line = read_mcp_frame(&mut reader, &mut frame, &mut oversized) => Event::Line(line?),
+            done = async { (&mut pending.as_mut().expect("guarded MCP service call").1).await }, if pending.is_some() => Event::Done(done),
+        };
+        let (bytes, too_large) = match event {
+            Event::Done(done) => {
+                let (id, _) = pending.take().context("missing MCP service call")?;
+                let result = done.context("MCP service worker failed")?;
+                let response = mcp_tool_result(id, result);
+                stdout.write_all(response.to_string().as_bytes()).await?;
+                stdout.write_all(b"\n").await?;
+                stdout.flush().await?;
+                continue;
+            }
+            Event::Line(Some(frame)) => frame,
+            Event::Line(None) => break,
+        };
+        if too_large {
+            stdout.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"Request exceeds 2 MiB\"}}\n").await?;
+            stdout.flush().await?;
+            continue;
+        }
+        let request: Value = match serde_json::from_slice(&bytes) {
+            Ok(value) => value,
+            Err(_) => {
+                stdout.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}\n").await?;
+                stdout.flush().await?;
+                continue;
+            }
+        };
+        let id = request.get("id").cloned();
+        if !request.is_object()
+            || request["jsonrpc"] != "2.0"
+            || !request["method"].is_string()
+            || id
+                .as_ref()
+                .is_some_and(|id| !(id.is_string() || id.is_i64() || id.is_u64() || id.is_null()))
+        {
+            let response = json!({"jsonrpc":"2.0","id":id.filter(|id| id.is_string() || id.is_i64() || id.is_u64()).unwrap_or(Value::Null),"error":{"code":-32600,"message":"Invalid Request"}});
+            stdout.write_all(response.to_string().as_bytes()).await?;
+            stdout.write_all(b"\n").await?;
+            stdout.flush().await?;
+            continue;
+        }
+        let Some(id) = id else {
+            continue;
+        };
+        let response = match request["method"].as_str().unwrap_or("") {
+            "initialize" => json!({"jsonrpc":"2.0","id":id,"result":{
+                "protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},
+                "serverInfo":{"name":"blackglass-headless-native","version":env!("CARGO_PKG_VERSION")}}}),
+            "ping" => json!({"jsonrpc":"2.0","id":id,"result":{}}),
+            "tools/list" => json!({"jsonrpc":"2.0","id":id,"result":tools()}),
+            "tools/call" => {
+                let name = request["params"]["name"].as_str().unwrap_or("");
+                match mcp_call_arguments(name, &request["params"]["arguments"])
+                    .and_then(|args| mcp_service_request(name, &args))
+                {
+                    Ok(service_request) if name == "sync_run" && pending.is_none() => {
+                        let path = path.to_path_buf();
+                        pending = Some((
+                            id,
+                            tokio::spawn(async move { service_call(&path, service_request).await }),
+                        ));
+                        continue;
+                    }
+                    Ok(_) if name == "sync_run" => {
+                        mcp_tool_result(id, Err(anyhow::anyhow!("Sync is already running")))
+                    }
+                    Ok(service_request) => {
+                        mcp_tool_result(id, service_call(path, service_request).await)
+                    }
+                    Err(error) => {
+                        json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":error.to_string()}})
+                    }
+                }
+            }
+            _ => {
+                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Method not found"}})
+            }
+        };
+        stdout.write_all(response.to_string().as_bytes()).await?;
+        stdout.write_all(b"\n").await?;
+        stdout.flush().await?;
+    }
+    // A pending service Sync belongs to the persistent service, not this MCP
+    // process. Dropping the waiting socket does not cancel or roll it back.
     Ok(())
 }
 
@@ -603,25 +1145,27 @@ where
 
 fn finish_mcp_sync(
     profile: &mut Profile,
-    path: &Path,
+    _path: &Path,
     completed: (VaultConfig, Result<i64>),
 ) -> Result<Result<i64>> {
     let (vault, result) = completed;
     profile.vault = Some(vault);
-    write_profile(path, profile)?;
     Ok(result)
 }
 
-fn start_mcp_sync(profile: &Profile) -> Result<McpSync> {
+fn start_mcp_sync(profile: &Profile, path: &Path) -> Result<McpSync> {
     let server = profile.server.clone();
     let token = token(profile)?.to_owned();
     let mut vault = profile.vault.clone().context("no vault connected")?;
+    let mut journal = crate::state::Journal::open(path, &mut vault)?;
     let (cancel, mut cancelled) = tokio::sync::watch::channel(false);
     let worker = tokio::spawn(async move {
         // Dropping the Sync future cancels network I/O, while the owned vault
         // still carries every completed filesystem transition for persistence.
         let result = cancellable_sync(
-            crate::sync::once(&server, &token, &mut vault),
+            crate::sync::once_with_checkpoint(&server, &token, &mut vault, &mut |state| {
+                journal.checkpoint(state)
+            }),
             &mut cancelled,
         )
         .await;
@@ -689,7 +1233,7 @@ async fn mcp(mut profile: Profile, path: &Path, auto_sync_seconds: Option<u64>) 
             Event::Line(line) => line,
             Event::Tick => {
                 if active_sync.is_none() && profile.token.is_some() && profile.vault.is_some() {
-                    active_sync = Some(start_mcp_sync(&profile)?);
+                    active_sync = Some(start_mcp_sync(&profile, path)?);
                 }
                 continue;
             }
@@ -768,7 +1312,7 @@ async fn mcp(mut profile: Profile, path: &Path, auto_sync_seconds: Option<u64>) 
                         if active_sync.is_some() {
                             bail!("Sync is already running");
                         }
-                        start_mcp_sync(&profile)
+                        start_mcp_sync(&profile, path)
                     })() {
                         Ok(worker) => {
                             active_sync = Some(worker);
@@ -887,6 +1431,8 @@ mod tests {
             applied_version: 0,
             known: BTreeMap::new(),
         };
+        let mut stale = vault.clone();
+        let mut journal = crate::state::Journal::open(&path, &mut vault).unwrap();
         let (cancel, mut receiver) = tokio::sync::watch::channel(false);
         let (reached, progress) = tokio::sync::oneshot::channel();
         let worker = tokio::spawn(async move {
@@ -894,9 +1440,11 @@ mod tests {
                 async {
                     vault.applied_version = 1;
                     vault.known.insert("a.md".into(), "v1".into());
+                    journal.checkpoint(&vault)?;
                     assert_eq!(vault.applied_version, 1);
                     vault.applied_version = 2;
                     vault.known.insert("a.md".into(), "v2".into());
+                    journal.checkpoint(&vault)?;
                     let _ = reached.send(());
                     std::future::pending::<Result<i64>>().await
                 },
@@ -909,10 +1457,9 @@ mod tests {
         cancel.send(true).unwrap();
         let result = finish_mcp_sync(&mut profile, &path, worker.await.unwrap()).unwrap();
         assert!(result.is_err());
-        let stored = read_profile(&path).unwrap();
-        let stored = stored.vault.unwrap();
-        assert_eq!(stored.applied_version, 2);
-        assert_eq!(stored.known.get("a.md").map(String::as_str), Some("v2"));
+        crate::state::Journal::open(&path, &mut stale).unwrap();
+        assert_eq!(stale.applied_version, 2);
+        assert_eq!(stale.known.get("a.md").map(String::as_str), Some("v2"));
     }
 
     #[tokio::test]

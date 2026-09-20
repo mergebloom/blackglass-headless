@@ -9,7 +9,12 @@ server="$1"
 client="$2"
 test_dir=$(mktemp -d /tmp/blackglass-native-linux.XXXXXX)
 server_pid=
+service_pid=
 cleanup() {
+  if [ -n "$service_pid" ]; then
+    kill -TERM "$service_pid" 2>/dev/null || true
+    wait "$service_pid" 2>/dev/null || true
+  fi
   if [ -n "$server_pid" ]; then
     kill -INT "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
@@ -85,6 +90,34 @@ start_server
 "$client" --profile "$profile_a" sync once
 "$client" --profile "$profile_b" sync once
 cmp "$test_dir/vault-a/b.md" "$test_dir/vault-b/b.md"
+
+"$client" --profile "$profile_a" service run --interval-seconds 1 > "$test_dir/service.log" 2>&1 &
+service_pid=$!
+count=0
+until [ -S "$test_dir/profile-a.sock" ]; do
+  kill -0 "$service_pid" 2>/dev/null || { echo 'service exited before socket readiness' >&2; exit 1; }
+  count=$((count + 1))
+  if [ "$count" -ge 100 ]; then echo 'service socket did not become ready' >&2; exit 1; fi
+  sleep 0.1
+done
+count=0
+until printf '# Background Linux Sync\n' | "$client" --profile "$profile_a" note write background.md >/dev/null 2>&1; do
+  count=$((count + 1))
+  if [ "$count" -ge 100 ]; then echo 'service did not accept local note write' >&2; exit 1; fi
+  sleep 0.1
+done
+count=0
+until "$client" --profile "$profile_b" sync once >/dev/null 2>&1 && [ -e "$test_dir/vault-b/background.md" ]; do
+  count=$((count + 1))
+  if [ "$count" -ge 100 ]; then echo 'background note did not reach second profile' >&2; exit 1; fi
+  sleep 0.1
+done
+cmp "$test_dir/vault-a/background.md" "$test_dir/vault-b/background.md"
+awk '/^VmRSS:/ {print "idle service " $2 " " $3}' "/proc/$service_pid/status"
+kill -TERM "$service_pid"
+wait "$service_pid"
+service_pid=
+test ! -e "$test_dir/profile-a.sock"
 
 if grep -aFq '# From Linux B' "$SELFHOST_DATABASE"; then
   echo 'server database contains plaintext canary' >&2

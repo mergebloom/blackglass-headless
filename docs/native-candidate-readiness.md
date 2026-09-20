@@ -1,9 +1,11 @@
-# Native headless candidate readiness (2026-09-19)
+# Native headless candidate readiness (2026-09-19, historical)
 
-This record describes the independent `bgh` 0.1.0 **candidate**, not a
-qualified general-availability release. The source tree is uncommitted; the
-binary embeds the SHA-256 of its native-only source archive, not a Git commit.
-Do not publish a release or claim full desktop/headless parity from this record.
+This is a point-in-time record for the independent `bgh` 0.1.0 candidate built
+on 2026-09-19. Its hashes and results apply only to those artifacts. Subsequent
+development added a service, SQLite state journal, and a Server conditional-push
+extension; none is represented by the binaries below. See
+[the native implementation plan](plans/native-client.md) for current gates.
+Do not claim full desktop/headless parity from this record.
 
 ## Built and tested
 
@@ -74,5 +76,5 @@ conditional write or idempotency key; client-only logic cannot promise
 exactly-once uploads. Metadata visibility and malicious-server integrity
 limitations are detailed in [the implementation plan](plans/native-client.md).
 
-No Server or Bridge source was changed. Existing dirty worktrees in those
-repositories were preserved.
+At the time of this snapshot, no Server or Bridge source was changed. This is
+not a statement about the current worktrees.

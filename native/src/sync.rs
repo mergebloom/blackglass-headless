@@ -653,7 +653,8 @@ async fn push(
     crypto: &VaultCrypto,
     relative: &str,
     content: Option<&[u8]>,
-) -> Result<()> {
+    expected_version: i64,
+) -> Result<i64> {
     let deleted = content.is_none();
     let bytes = content.unwrap_or_default();
     if bytes.len() > 50 * 1024 * 1024 {
@@ -672,7 +673,8 @@ async fn push(
     wire.send(json!({"op":"push","path":crypto.encode_path(relative)?,"relatedpath":null,
         "extension":extension,"hash":if deleted { String::new() } else { crypto.content_hash(bytes)? },
         "ctime":millis,"mtime":millis,"folder":false,"deleted":deleted,
-        "size":encrypted.len(),"pieces":encrypted.len().div_ceil(PIECE)})).await?;
+        "size":encrypted.len(),"pieces":encrypted.len().div_ceil(PIECE),
+        "expected_version":expected_version})).await?;
     if encrypted.is_empty() {
         let ack = wire
             .response()
@@ -681,7 +683,13 @@ async fn push(
         if ack["res"] != "ok" {
             bail!("unexpected push acknowledgement");
         }
-        return Ok(());
+        let uid = ack["uid"]
+            .as_i64()
+            .context("conditional push receipt missing UID")?;
+        if uid <= expected_version {
+            bail!("conditional push receipt did not advance the vault");
+        }
+        return Ok(uid);
     }
     let ready = wire
         .response()
@@ -690,6 +698,7 @@ async fn push(
     if ready["res"] != "next" {
         bail!("unexpected push readiness response");
     }
+    let mut committed_uid = None;
     for (index, piece) in encrypted.chunks(PIECE).enumerate() {
         tokio::time::timeout(
             std::time::Duration::from_secs(30),
@@ -705,20 +714,47 @@ async fn push(
         if ack["res"] != if final_piece { "ok" } else { "next" } {
             bail!("indeterminate upload acknowledgement for {relative}");
         }
+        if final_piece {
+            committed_uid = Some(
+                ack["uid"]
+                    .as_i64()
+                    .context("conditional push receipt missing UID")?,
+            );
+        }
     }
-    Ok(())
+    let uid = committed_uid.context("conditional push receipt missing")?;
+    if uid <= expected_version {
+        bail!("conditional push receipt did not advance the vault");
+    }
+    Ok(uid)
 }
 
-pub async fn once(server: &str, token: &str, vault: &mut VaultConfig) -> Result<i64> {
+pub async fn once_with_checkpoint<F>(
+    server: &str,
+    token: &str,
+    vault: &mut VaultConfig,
+    checkpoint: &mut F,
+) -> Result<i64>
+where
+    F: FnMut(&VaultConfig) -> Result<()>,
+{
     tokio::time::timeout(
         std::time::Duration::from_secs(15 * 60),
-        once_inner(server, token, vault),
+        once_inner(server, token, vault, checkpoint),
     )
     .await
     .context("Sync exceeded 15-minute operation deadline")?
 }
 
-async fn once_inner(server: &str, token: &str, vault: &mut VaultConfig) -> Result<i64> {
+async fn once_inner<F>(
+    server: &str,
+    token: &str,
+    vault: &mut VaultConfig,
+    checkpoint: &mut F,
+) -> Result<i64>
+where
+    F: FnMut(&VaultConfig) -> Result<()>,
+{
     validate_data_host(server, &vault.host, Some(&vault.host))?;
     let base = hex::decode(&vault.base_key)?;
     let base: [u8; 32] = base
@@ -755,11 +791,19 @@ async fn once_inner(server: &str, token: &str, vault: &mut VaultConfig) -> Resul
     if ready["op"] != "ready" {
         bail!("unexpected Sync bootstrap message");
     }
+    wire.send(json!({"op":"capabilities"})).await?;
+    let capabilities = wire.response().await?;
+    if capabilities["res"] != "ok" || capabilities["conditional_push_v1"] != true {
+        bail!("server does not advertise conditional_push_v1; refusing native writes");
+    }
     let boundary = ready["version"].as_i64().context("ready version missing")?;
     while let Some(notice) = wire.queued.pop()? {
         apply_notice(&mut wire, vault, &crypto, notice).await?;
+        checkpoint(vault)?;
     }
     vault.applied_version = vault.applied_version.max(boundary);
+    checkpoint(vault)?;
+    let mut expected_version = vault.applied_version;
     let files = inventory(&vault.root)?;
     for relative in files.keys() {
         let file = crate::root::open_regular_beneath(&vault.root, Path::new(relative))?;
@@ -775,10 +819,20 @@ async fn once_inner(server: &str, token: &str, vault: &mut VaultConfig) -> Resul
         if vault.known.get(relative) == Some(&digest) {
             continue;
         }
-        // The server has no conditional-write or idempotency fields. A missing
-        // acknowledgement is indeterminate and is never reported as success.
-        push(&mut wire, &crypto, relative, Some(&content)).await?;
+        // Conditional push rejects a stale vault version, but a missing
+        // acknowledgement remains indeterminate until replay reconciles it.
+        let uid = push(
+            &mut wire,
+            &crypto,
+            relative,
+            Some(&content),
+            expected_version,
+        )
+        .await?;
         vault.known.insert(relative.clone(), digest);
+        vault.applied_version = uid;
+        expected_version = uid;
+        checkpoint(vault)?;
     }
     let missing: Vec<String> = vault
         .known
@@ -787,11 +841,15 @@ async fn once_inner(server: &str, token: &str, vault: &mut VaultConfig) -> Resul
         .cloned()
         .collect();
     for relative in missing {
-        push(&mut wire, &crypto, &relative, None).await?;
+        let uid = push(&mut wire, &crypto, &relative, None, expected_version).await?;
         vault.known.remove(&relative);
+        vault.applied_version = uid;
+        expected_version = uid;
+        checkpoint(vault)?;
     }
     while let Some(notice) = wire.queued.pop()? {
         apply_notice(&mut wire, vault, &crypto, notice).await?;
+        checkpoint(vault)?;
     }
     Ok(vault.applied_version)
 }

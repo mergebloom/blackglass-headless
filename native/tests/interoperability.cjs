@@ -11,6 +11,7 @@ const test = require("node:test");
 
 const root = path.resolve(__dirname, "../..");
 const serverBinary = process.env.BLACKGLASS_SERVER_BINARY;
+const hermesBinary = process.env.HERMES_BINARY;
 const nativeBinary = process.env.BLACKGLASS_NATIVE_BINARY || path.join(root, "native/target/debug/bgh");
 
 async function port() {
@@ -81,6 +82,23 @@ test("native and reference clients exchange custom-E2EE notes without server key
   assert.equal(fs.readFileSync(path.join(nativeRoot, "reference.md"), "utf8"), "# Written by reference\n");
   assert.deepEqual(fs.readFileSync(path.join(nativeRoot, "reference.png")), referenceImage);
 
+  if (hermesBinary) {
+    const hermesHome = path.join(dir, "hermes-home");
+    fs.mkdirSync(hermesHome, { recursive: true });
+    const hermesEnv = { ...process.env, HOME: hermesHome, HERMES_HOME: hermesHome, XDG_CONFIG_HOME: path.join(hermesHome, ".config") };
+    delete hermesEnv.HERMES_CONFIG;
+    delete hermesEnv.HERMES_PROFILE;
+    const added = spawnSync(hermesBinary, ["mcp", "add", "blackglass", "--command", nativeBinary, "--args", "--profile", nativeProfile, "mcp"], { env: hermesEnv, encoding: "utf8", input: "\n" });
+    assert.equal(added.status, 0, `Hermes MCP add failed: ${(added.stdout + added.stderr).slice(0, 1500)}`);
+    assert.doesNotMatch(added.stdout + added.stderr, /failed|error/i, `Hermes rejected MCP registration: ${(added.stdout + added.stderr).slice(0, 1500)}`);
+    const tested = spawnSync(hermesBinary, ["mcp", "test", "blackglass"], { env: hermesEnv, encoding: "utf8" });
+    assert.equal(tested.status, 0, `Hermes MCP test failed: ${(tested.stdout + tested.stderr).slice(0, 1500)}`);
+    const discovery = tested.stdout + tested.stderr;
+    for (const name of ["note_list", "note_read", "note_write", "note_search", "sync_run", "sync_status", "sync_cancel"]) {
+      assert.match(discovery, new RegExp(name), `Hermes did not discover ${name}`);
+    }
+  }
+
   fs.writeFileSync(path.join(nativeRoot, "native.md"), "# Written by native\n");
   native(["sync", "once"]);
   reference("sync", "--path", referenceRoot);
@@ -136,9 +154,10 @@ test("native and reference clients exchange custom-E2EE notes without server key
   const aheadProfile = JSON.parse(savedProfile);
   aheadProfile.vault.applied_version += 100000;
   fs.writeFileSync(nativeProfile, JSON.stringify(aheadProfile));
-  const rollback = spawnSync(nativeBinary, ["--profile", nativeProfile, "sync", "once"], { encoding: "utf8" });
-  assert.notEqual(rollback.status, 0);
-  assert.match(rollback.stderr, /ahead of the server/);
+  // The durable state database, not this stale JSON compatibility snapshot,
+  // owns the applied cursor after a completed Sync transition.
+  native(["sync", "once"]);
+  assert.ok(Number(native(["sync", "status"]).match(/applied revision (\d+)/)?.[1]) < aheadProfile.vault.applied_version);
   assert.equal(fs.readFileSync(path.join(nativeRoot, "reference.md"), "utf8"), "# Remote edit after local delete\n");
   fs.writeFileSync(nativeProfile, savedProfile);
 
@@ -218,6 +237,85 @@ test("native and reference clients exchange custom-E2EE notes without server key
   });
   assert.equal(fs.readFileSync(path.join(referenceRoot, "agent.md"), "utf8"), "# Agent note\n");
 
+  const service = spawn(nativeBinary, ["--profile", nativeProfile, "service", "run", "--interval-seconds", "1"], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  t.after(() => service.kill("SIGTERM"));
+  let serviceReady = false;
+  for (let i = 0; i < 100; i++) {
+    if (!fs.existsSync(nativeProfile.replace(/\.json$/, ".sock"))) {
+      if (service.exitCode !== null) throw new Error(`native service exited: ${service.exitCode}`);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      continue;
+    }
+    const status = spawnSync(nativeBinary, ["--profile", nativeProfile, "sync", "status"], { encoding: "utf8" });
+    if (status.status === 0 && status.stdout.includes("applied revision")) {
+      serviceReady = true;
+      break;
+    }
+    if (service.exitCode !== null) throw new Error(`native service exited: ${service.exitCode}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.ok(serviceReady, "native service did not become ready");
+  const serviceWrite = async (name, content) => {
+    for (let i = 0; i < 100; i++) {
+      const result = spawnSync(nativeBinary, ["--profile", nativeProfile, "note", "write", name], {
+        input: content, encoding: "utf8",
+      });
+      if (result.status === 0) return;
+      if (!result.stderr.includes("Sync is running")) throw new Error(result.stderr);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error("native service never accepted a note write");
+  };
+  await serviceWrite("service.md", "# Persistent service\n");
+
+  const proxy = spawn(nativeBinary, ["--profile", nativeProfile, "mcp"], { stdio: ["pipe", "pipe", "pipe"] });
+  t.after(() => proxy.kill("SIGTERM"));
+  const proxyReader = readline.createInterface({ input: proxy.stdout });
+  const proxyResponses = [];
+  proxyReader.on("line", (line) => proxyResponses.push(JSON.parse(line)));
+  let proxyId = 0;
+  async function proxyCall(method, params = {}) {
+    const request = ++proxyId;
+    proxy.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: request, method, params })}\n`);
+    for (let i = 0; i < 200; i++) {
+      const index = proxyResponses.findIndex((response) => response.id === request);
+      if (index !== -1) return proxyResponses.splice(index, 1)[0];
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`service-backed MCP ${method} timed out`);
+  }
+  assert.equal((await proxyCall("initialize")).result.serverInfo.name, "blackglass-headless-native");
+  assert.equal((await proxyCall("tools/list")).result.tools.length, 7);
+  assert.equal((await proxyCall("tools/call", { name: "note_read", arguments: { path: "agent.md" } })).result.isError, false);
+  assert.equal((await proxyCall("tools/call", { name: "sync_status", arguments: {} })).result.isError, false);
+  for (let i = 0; i < 100; i++) {
+    const written = await proxyCall("tools/call", { name: "note_write", arguments: { path: "proxy.md", content: "# MCP through service\n" } });
+    if (!written.result.isError) break;
+    assert.match(written.result.content[0].text, /Sync is running/);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    if (i === 99) throw new Error("service-backed MCP never accepted a note write");
+  }
+  proxy.stdin.end();
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("service-backed MCP did not exit")), 10000);
+    proxy.once("exit", () => { clearTimeout(timer); resolve(); });
+  });
+  assert.equal(service.exitCode, null, "service stopped with Hermes/MCP");
+  await serviceWrite("after-mcp.md", "# Service outlived MCP\n");
+  for (let i = 0; i < 20; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    reference("sync", "--path", referenceRoot);
+    if (fs.existsSync(path.join(referenceRoot, "after-mcp.md"))) break;
+  }
+  assert.equal(fs.readFileSync(path.join(referenceRoot, "service.md"), "utf8"), "# Persistent service\n");
+  assert.equal(fs.readFileSync(path.join(referenceRoot, "proxy.md"), "utf8"), "# MCP through service\n");
+  assert.equal(fs.readFileSync(path.join(referenceRoot, "after-mcp.md"), "utf8"), "# Service outlived MCP\n");
+  service.kill("SIGTERM");
+  await new Promise((resolve) => service.once("exit", resolve));
+  assert.equal(fs.existsSync(nativeProfile.replace(/\.json$/, ".sock")), false);
+
   const relocatedRoot = path.join(dir, "native-vault-relocated");
   fs.renameSync(nativeRoot, relocatedRoot);
   native(["configure", "--server", origin]);
@@ -227,4 +325,30 @@ test("native and reference clients exchange custom-E2EE notes without server key
   native(["vault", "connect", "--id", id, "--path", replacementRoot, "--password-stdin"], "vault-passphrase\n");
   native(["sync", "once"]);
   assert.equal(fs.readFileSync(path.join(replacementRoot, "agent.md"), "utf8"), "# Agent note\n");
+
+  // A real server restore rotates vault IDs and invalidates sessions. A stale
+  // native profile must preserve local bytes and refuse to resume. A new profile
+  // can explicitly select the replacement vault and bootstrap from server data.
+  server.kill("SIGINT");
+  await new Promise((resolve) => server.once("exit", resolve));
+  const recoveredDatabase = path.join(dir, "recovered.sqlite");
+  run(serverBinary, ["restore", backup, recoveredDatabase], { env: serverEnv });
+  const recoveredEnv = { ...serverEnv, SELFHOST_DATABASE: recoveredDatabase };
+  server = spawn(serverBinary, ["serve"], { env: recoveredEnv, stdio: ["ignore", "pipe", "pipe"] });
+  await ready(origin);
+  const staleResult = spawnSync(nativeBinary, ["--profile", nativeProfile, "sync", "once"], { encoding: "utf8" });
+  assert.notEqual(staleResult.status, 0, "stale client resumed after server recovery");
+  assert.equal(fs.readFileSync(path.join(replacementRoot, "agent.md"), "utf8"), "# Agent note\n");
+  const recoveredProfile = path.join(dir, "recovered-profile.json");
+  const recovered = (args, input) => run(nativeBinary, ["--profile", recoveredProfile, ...args], { input });
+  recovered(["configure", "--server", origin]);
+  recovered(["login", "--email", "native@example.test", "--password-stdin"], "account-passphrase\n");
+  const recoveredId = recovered(["vault", "list"]).split("\n").find((line) => line.includes("Native-E2E"))?.split("\t")[0];
+  assert.ok(recoveredId && recoveredId !== id, "restore did not rotate the vault identity");
+  const recoveredRoot = path.join(dir, "recovered-vault");
+  fs.mkdirSync(recoveredRoot);
+  recovered(["vault", "connect", "--id", recoveredId, "--path", recoveredRoot, "--password-stdin"], "vault-passphrase\n");
+  recovered(["sync", "once"]);
+  assert.equal(fs.readFileSync(path.join(recoveredRoot, "reference.md"), "utf8"), "# Remote edit after local delete\n");
+  assert.deepEqual(fs.readFileSync(path.join(recoveredRoot, "native.pdf")), nativePdf);
 });

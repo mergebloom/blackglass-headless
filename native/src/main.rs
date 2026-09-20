@@ -2,6 +2,7 @@ mod app;
 mod crypto;
 mod notes;
 mod root;
+mod state;
 mod sync;
 
 #[tokio::main]

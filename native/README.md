@@ -44,26 +44,46 @@ local until `bgh sync once` succeeds. The MCP equivalent is `bgh mcp`, exposing
 `note_list`, `note_search`, `note_read`, `note_write`, `sync_run`,
 `sync_status`, and `sync_cancel` over local stdio. Sync runs in a serialized
 worker so status and ping remain responsive while it is in progress. A cancelled
-upload may have reached the server; run Sync again to reconcile. For Hermes,
-configure the executable path and
-arguments `--profile /private/path/profile.json mcp --auto-sync-seconds 30`
-for automatic polling while Hermes keeps the MCP process open; omit the option
-to sync only on `sync_run`. Do not expose it as a network MCP server. A
-dedicated Unix user and vault directory are recommended for an agent.
+upload may have reached the server; run Sync again to reconcile.
+
+## Persistent service and Hermes
+
+After connecting a vault, run `bgh service run --interval-seconds 30` in the
+foreground or install `tools/bgh.service.example` as a systemd **user** service.
+The example assumes `bgh` is at `~/.local/bin/bgh` and the default profile is
+at `~/.config/blackglass-headless-native/profile.json`; edit it for a different
+installation or profile. On a Linux host with systemd:
+
+```sh
+install -m 0755 bgh-0.1.0-linux-amd64 ~/.local/bin/bgh
+mkdir -p ~/.config/systemd/user
+install -m 0644 bgh.service.example ~/.config/systemd/user/bgh.service
+systemctl --user daemon-reload
+systemctl --user enable --now bgh.service
+systemctl --user status bgh.service
+```
+
+Use the arm64 executable instead on that architecture. The service holds one
+owner-only profile and vault lock, persists each completed Sync transition in
+a private SQLite state file, and retries network failures with bounded backoff.
+CLI note and Sync commands and `bgh mcp` use its owner-only Unix socket while
+it is running. They do not start a second Sync engine. Stop the service before
+changing account, server, or vault enrollment. The service continues syncing
+after Hermes exits; without it, `bgh mcp --auto-sync-seconds 30` can poll only
+while that MCP process remains open. Do not expose MCP or the service socket
+over the network. A dedicated Unix user and vault directory are recommended
+for an agent. The server must advertise the Blackglass `conditional_push_v1`
+capability; old Server releases do not support native writes with this
+development version.
 
 ## Current boundaries
 
-The engine performs one-shot cycles; `bgh sync watch --interval-seconds 30`
-repeats them for a long-lived CLI process. Only one process can own a profile,
-so `sync watch` and `bgh mcp` cannot use the same profile concurrently.
-MCP automatic polling stops when Hermes closes the MCP process. There is no
-independent durable background service, SQLite journal, or remote conditional
-write support.
-The server's existing protocol lacks upload idempotency and compare-and-swap;
-an interrupted upload can have an indeterminate outcome. Local/remote edits
-to the same known file fail closed and retain the local bytes, but a race
-arriving after catch-up may still be overwritten. There is no automatic
-conflict merge. Empty folders, rename metadata, history, revocation lifecycle,
+The service, SQLite cursor/inventory journal, and vault-wide conditional push
+are implemented locally but are not yet a qualified release. A lost upload
+acknowledgement can still have an indeterminate outcome; there is no durable
+server-side idempotency key or automatic conflict merge. A later unconditional
+legacy desktop write can still replace a conditional native write. Empty
+folders, rename metadata, history, revocation lifecycle,
 offline queues, and server-restore recovery are not qualified. Do not use it
 as the sole copy of important data yet.
 Previous local versions and remote-deleted files are retained in an owner-only
@@ -100,11 +120,17 @@ BLACKGLASS_SERVER_BINARY=/path/to/blackglass-server \
   node --test native/tests/interoperability.cjs
 ```
 
+Set `HERMES_BINARY=/path/to/hermes` for an optional real Hermes MCP discovery
+check. It uses a temporary Hermes home and does not request a model response.
+
 The interoperability test uses a disposable loopback Server and the pinned
 reference client. It covers custom-E2EE recovery, bidirectional Markdown and
 multi-piece binary files, edits, deletion, wrong-password rejection, conflict
-preservation, server restart, backup verification, rollback rejection, server
-plaintext absence, MCP note-write-to-Sync, and MCP automatic polling. These tests
+preservation, server restart, backup verification, server plaintext absence,
+MCP note-write-to-Sync, MCP automatic polling, and a real server restore that
+rejects a stale profile while a fresh one recovers from the rotated vault. It
+also exercises the persistent service with concurrent CLI/MCP access and Sync
+after MCP exit. These tests
 are not a replacement for the full release matrix in the
 [development plan](../docs/plans/native-client.md).
 

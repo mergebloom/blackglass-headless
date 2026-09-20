@@ -1,0 +1,15 @@
+[Unit]
+Description=Blackglass Headless Sync
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/bgh --profile %h/.config/blackglass-headless-native/profile.json service run --interval-seconds 30
+Restart=on-failure
+RestartSec=10s
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

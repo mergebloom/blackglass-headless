@@ -12,9 +12,9 @@ case "$arch:$(uname -m)" in
 esac
 : "${CARGO_TARGET_DIR:?set an architecture-specific CARGO_TARGET_DIR}"
 
-native_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+native_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 mkdir -p "$2"
-output_dir=$(CDPATH= cd -- "$2" && pwd)
+output_dir=$(CDPATH='' cd -- "$2" && pwd)
 version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$native_dir/Cargo.toml" | head -n 1)
 if [ -z "$version" ]; then echo 'package version not found' >&2; exit 2; fi
 source_archive="$output_dir/blackglass-headless-native-$version-source.tar.gz"
@@ -24,7 +24,8 @@ checksums="$output_dir/sha256sums.txt"
 license_report="$output_dir/dependency-licenses.json"
 notices="$output_dir/THIRD-PARTY-LICENSES.txt"
 license="$output_dir/LICENSE"
-for item in "$source_archive" "$binary" "$binary_archive" "$checksums" "$license_report" "$notices" "$license"; do
+service_unit="$output_dir/bgh.service.example"
+for item in "$source_archive" "$binary" "$binary_archive" "$checksums" "$license_report" "$notices" "$license" "$service_unit"; do
   if [ -e "$item" ]; then echo "refusing to overwrite $item" >&2; exit 2; fi
 done
 
@@ -40,12 +41,13 @@ cp "$CARGO_TARGET_DIR/release/bgh" "$binary"
 chmod 755 "$binary"
 "$binary" build-info | grep -F "\"source_sha256\":\"$source_sha\"" >/dev/null
 cp "$build_root/LICENSE" "$license"
+cp "$build_root/tools/bgh.service.example" "$service_unit"
 target=$(rustc -vV | sed -n 's/^host: //p')
 cargo metadata --locked --filter-platform "$target" --format-version 1 \
   --manifest-path "$build_root/Cargo.toml" \
   | python3 "$build_root/tools/license-report.py" "$notices" > "$license_report"
 tar --directory "$output_dir" --sort=name --mtime='@0' --owner=0 --group=0 \
-  --numeric-owner -czf "$binary_archive" "$(basename "$binary")" LICENSE THIRD-PARTY-LICENSES.txt dependency-licenses.json
+  --numeric-owner -czf "$binary_archive" "$(basename "$binary")" LICENSE THIRD-PARTY-LICENSES.txt dependency-licenses.json bgh.service.example
 (cd "$output_dir" && sha256sum "$(basename "$source_archive")" "$(basename "$binary")" \
-  "$(basename "$binary_archive")" LICENSE THIRD-PARTY-LICENSES.txt dependency-licenses.json > sha256sums.txt)
+  "$(basename "$binary_archive")" LICENSE THIRD-PARTY-LICENSES.txt dependency-licenses.json bgh.service.example > sha256sums.txt)
 echo "packaged $arch; source SHA-256 $source_sha"

@@ -20,6 +20,7 @@ cp "$package_dir"/* "$test_dir/"
   tar -tzf "$archive" | grep -Fx LICENSE >/dev/null
   tar -tzf "$archive" | grep -Fx THIRD-PARTY-LICENSES.txt >/dev/null
   tar -tzf "$archive" | grep -Fx dependency-licenses.json >/dev/null
+  tar -tzf "$archive" | grep -Fx bgh.service.example >/dev/null
   if tar -tzf "$source" | grep -Ei '(^|/)(app\.asar|obsidian.*\.js|cli\.js)$'; then
     echo 'source archive contains an upstream bundle' >&2
     exit 1

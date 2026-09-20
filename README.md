@@ -6,6 +6,9 @@ does not run or ship the upstream JavaScript bundle. The existing Node-based
 adapter described below remains the reference client while native release
 qualification grows. Both executables use the `bgh` name; install only the one
 whose instructions you intend to follow.
+The [current native candidate evidence](docs/native-service-candidate-2026-09-20.md)
+records the new service and Linux package tests separately from the existing
+adapter release.
 
 Blackglass Headless is a command-line Sync client for a self-hosted
 [Blackglass Server](https://github.com/mergebloom/blackglass-server). It runs

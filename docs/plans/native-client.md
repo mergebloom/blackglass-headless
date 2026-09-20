@@ -1,11 +1,12 @@
 # Native Blackglass Headless client
 
 Planning baseline: 2026-09-19. Implementation is in progress under `native/`.
-The native Rust crypto/one-shot Sync/CLI/local stdio MCP vertical slice has
+The initial native Rust crypto/one-shot Sync/CLI/local stdio MCP vertical slice
 passed disposable Server/reference-client interoperability tests and packaged
-Linux amd64/arm64 Sync smoke tests. It is not yet a durable background service
-or release-qualified Linux client. Optional polling exists while `sync watch`
-or MCP remains alive.
+Linux amd64/arm64 Sync smoke tests. Subsequent local work adds a persistent
+service, a private SQLite applied-state journal, and a negotiated conditional
+push extension in Server. Those changes have not been packaged or qualified on
+both Linux architectures. The staged gates below remain the release criteria.
 
 ## Outcome and boundaries
 
@@ -152,9 +153,10 @@ separate service identity/container when that stronger isolation is required.
 6. After a server restore, a cursor ahead of the server is rejected. Preserve
    local files and pending operations; require a reviewed re-bootstrap/merge
    rather than treating everything local as new or deleting it.
-7. Existing uploads have no atomic expected-revision check. Local expected-hash
-   checks protect against stale local tool edits only. Catch-up before upload
-   reduces races but cannot guarantee remote compare-and-swap.
+7. The current development Server has a negotiated, atomic vault-version
+   conditional push extension. It rejects native pushes based on stale server
+   state. Local expected-hash checks protect against stale local tool edits.
+   Legacy desktop uploads remain unconditional, so this is not universal CAS.
 8. There is no server request deduplication. Persist operation IDs and reconcile
    uncertain acknowledgements against observed revisions before retrying. If
    outcome remains ambiguous, return `indeterminate`; do not promise exactly-once.
@@ -221,12 +223,12 @@ release budgets. Client search resources are distinct from server budgets.
 
 ## Server scope and deferred work
 
-Stages 0-6 target the existing server protocol. If strict remote conditional
-writes or exactly-once commit behavior becomes a required guarantee, design a
-separate backward-compatible extension with capability negotiation, transactional
-expected-head checks and durable idempotency records. A client must not infer
-support because the server silently accepts extra JSON fields. Such changes
-still require no decryption keys and cannot prevent later legacy desktop writes.
+The development Server now advertises `conditional_push_v1`; native clients
+require that capability and pass the expected vault version at commit. This is
+backward-compatible for legacy clients but does not provide exactly-once commit
+behavior. Durable idempotency records, uncertain-ack reconciliation, and mixed
+desktop races remain open. The server needs no decryption keys for this
+extension. A client must never infer support from silently accepted JSON fields.
 
 Deferred: managed encryption enrollment, public-key/PQ key distribution, remote
 MCP, offline mobile clients, Windows, UI/plugin execution, Dataview/Bases engines,
@@ -236,7 +238,8 @@ portable; storing a plugin's files is not implementing that plugin's behavior.
 
 ## Audit verification status
 
-Implementation evidence so far:
+Historical initial-candidate evidence (not qualification of the current
+service/journal/conditional-push work):
 
 - `cargo test --offline` passes native crypto, path/host safety, and note
   stale-hash tests on the development Mac.
@@ -253,9 +256,9 @@ Implementation evidence so far:
   backup verification, and ciphertext-at-rest smoke tests against the verified
   Blackglass Server 0.6.1 Linux release binary. Both checksum manifests pass.
   These are candidate artifacts, not a fully qualified release.
-- The native client currently stores an owner-only profile with token and
-  derived key, supports one connected vault, and lacks the durable/background
-  service and many Stage 2-6 gates above. It has no release qualification yet.
+- The initial candidate stored an owner-only profile with token and derived
+  key and supported one connected vault. The newer service/journal work has
+  not passed the full Stage 2-6 gates or release qualification yet.
 - The desktop compatibility matrix records older exact qualified combinations;
   it must not be reused as evidence for this new client. Existing user edits
   in Server and Bridge were not modified.
