@@ -17,9 +17,11 @@ describes different binaries and remains historical evidence.
   vault version inside the commit transaction and receive a committed UID;
   legacy push responses remain unchanged. The client refuses a Server without
   the capability.
-- Restore E2E verifies a stale profile is rejected without losing local bytes,
-  while a fresh profile connects to the rotated vault and recovers backed-up
-  files.
+- Replay E2E rewinds the journal after a downloaded file, a propagated
+  deletion, and a committed upload with a simulated lost receipt. Retry
+  converges without duplicating the committed upload. Restore E2E verifies a
+  stale profile is rejected without losing local bytes, while a fresh profile
+  connects to the rotated vault and recovers backed-up files.
 
 ## Validation completed
 
@@ -42,20 +44,22 @@ describes different binaries and remains historical evidence.
   Sync, and clean socket shutdown. Same-builder rebuilds yield byte-identical
   executables and binary archives. This is repeatability on those builders,
   not cross-environment reproducibility.
-- Idle service RSS during the final smoke runs: 7,116 KiB (arm64) and 14,556 KiB
+- Idle service RSS during the latest smoke runs: 7,140 KiB (arm64) and 14,540 KiB
   (amd64). These are observations, not resource budgets or peak measurements.
 
 | Asset | SHA-256 |
 | --- | --- |
-| Source archive, both architectures | `7e96b4b186c4f897e1c1219aa2f3d676b0a30f7bfde096cb7ac8037c076697d3` |
-| `native/dist/dev-current-arm64/bgh-0.1.0-linux-arm64` | `602c0e92ecf936ea70a1148c7006e72b9cdd8b78041d204596add10afed9bb7c` |
-| `native/dist/dev-current-arm64/bgh-0.1.0-linux-arm64.tar.gz` | `3c2929686c89c007c0701f18b6006a57b504da209330686638b8a02f1bb5bac3` |
-| `native/dist/dev-current-amd64/bgh-0.1.0-linux-amd64` | `e0910b32771fc9e531a3995c33db5337f682c342414180162d71faa470f23561` |
-| `native/dist/dev-current-amd64/bgh-0.1.0-linux-amd64.tar.gz` | `73cc9d89ab6435e52fd679b514c1bbb43ebe38ebbd499882cc9c0a65fb86cd4c` |
+| Source archive, both architectures | `97ee724efb8b587b6d8069f1a56d9a313fdd4e1f475a223df2b3c14634fb39d1` |
+| `native/dist/dev-current-arm64/bgh-0.1.0-linux-arm64` | `ac54e6af5576a6ac543a4566056472a15c3139574585fc365c35e39c53e11282` |
+| `native/dist/dev-current-arm64/bgh-0.1.0-linux-arm64.tar.gz` | `5786476db21eb0f91b9ebf0c2d98e18e9da234378bbdb8c98b7956a72a56d4a4` |
+| `native/dist/dev-current-amd64/bgh-0.1.0-linux-amd64` | `6415b7f2f03fc7538f1fa1957bec346afd67cdbb8aeb7ce9189350a1d8003b77` |
+| `native/dist/dev-current-amd64/bgh-0.1.0-linux-amd64.tar.gz` | `cfe43a7388b00cfe51eaf88934f0738a5d999f3ecfd00a5232a5c8de2f963252` |
 
 ## Release blockers
 
-No durable server-side idempotency key or resolved lost-ack protocol exists.
+No durable server-side idempotency key or general lost-ack protocol exists;
+the tested same-content replay case does not establish exactly-once behavior
+for every interleaving.
 Legacy desktop writes are still unconditional. The journal has not passed a
 kill-at-every-transition fault matrix or large-vault resource tests. Native
 collaboration/revocation and mixed packaged-desktop E2E are not qualified.

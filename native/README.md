@@ -127,8 +127,9 @@ The interoperability test uses a disposable loopback Server and the pinned
 reference client. It covers custom-E2EE recovery, bidirectional Markdown and
 multi-piece binary files, edits, deletion, wrong-password rejection, conflict
 preservation, server restart, backup verification, server plaintext absence,
-MCP note-write-to-Sync, MCP automatic polling, and a real server restore that
-rejects a stale profile while a fresh one recovers from the rotated vault. It
+MCP note-write-to-Sync, MCP automatic polling, replay after a file change,
+deletion, or lost upload receipt, and a real server restore that rejects a stale
+profile while a fresh one recovers from the rotated vault. It
 also exercises the persistent service with concurrent CLI/MCP access and Sync
 after MCP exit. These tests
 are not a replacement for the full release matrix in the

@@ -99,6 +99,45 @@ test("native and reference clients exchange custom-E2EE notes without server key
     }
   }
 
+  const stateFiles = fs.readdirSync(dir).filter((name) => name.startsWith("native-profile.json.") && name.endsWith(".state.sqlite"));
+  assert.equal(stateFiles.length, 1, "expected one durable native Sync state database");
+  const stateFile = path.join(dir, stateFiles[0]);
+  const replaySnapshot = path.join(dir, "replay-before-download.sqlite");
+  fs.copyFileSync(stateFile, replaySnapshot);
+  fs.writeFileSync(path.join(referenceRoot, "replay.md"), "# Replay after downloaded file\n");
+  reference("sync", "--path", referenceRoot);
+  native(["sync", "once"]);
+  assert.equal(fs.readFileSync(path.join(nativeRoot, "replay.md"), "utf8"), "# Replay after downloaded file\n");
+  // Simulate a crash after filesystem installation but before the SQLite
+  // checkpoint: replay must recognize the already-installed content.
+  fs.copyFileSync(replaySnapshot, stateFile);
+  native(["sync", "once"]);
+  assert.equal(fs.readFileSync(path.join(nativeRoot, "replay.md"), "utf8"), "# Replay after downloaded file\n");
+
+  const beforeDelete = path.join(dir, "replay-before-delete.sqlite");
+  fs.copyFileSync(stateFile, beforeDelete);
+  fs.unlinkSync(path.join(referenceRoot, "replay.md"));
+  reference("sync", "--path", referenceRoot);
+  native(["sync", "once"]);
+  assert.equal(fs.existsSync(path.join(nativeRoot, "replay.md")), false);
+  fs.copyFileSync(beforeDelete, stateFile);
+  native(["sync", "once"]);
+  assert.equal(fs.existsSync(path.join(nativeRoot, "replay.md")), false);
+
+  const beforeAck = path.join(dir, "replay-before-ack.sqlite");
+  fs.copyFileSync(stateFile, beforeAck);
+  fs.writeFileSync(path.join(nativeRoot, "ack-replay.md"), "# Committed with lost receipt\n");
+  native(["sync", "once"]);
+  const committedVersion = native(["sync", "status"]).match(/applied revision (\d+)/)?.[1];
+  assert.ok(committedVersion);
+  // Simulate a committed upload whose acknowledgement was lost before the
+  // local checkpoint. Replaying its notice must not create another revision.
+  fs.copyFileSync(beforeAck, stateFile);
+  native(["sync", "once"]);
+  assert.equal(native(["sync", "status"]).match(/applied revision (\d+)/)?.[1], committedVersion);
+  reference("sync", "--path", referenceRoot);
+  assert.equal(fs.readFileSync(path.join(referenceRoot, "ack-replay.md"), "utf8"), "# Committed with lost receipt\n");
+
   fs.writeFileSync(path.join(nativeRoot, "native.md"), "# Written by native\n");
   native(["sync", "once"]);
   reference("sync", "--path", referenceRoot);
