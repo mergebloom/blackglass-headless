@@ -55,7 +55,7 @@ at `~/.config/blackglass-headless-native/profile.json`; edit it for a different
 installation or profile. On a Linux host with systemd:
 
 ```sh
-install -m 0755 bgh-0.1.0-linux-amd64 ~/.local/bin/bgh
+install -m 0755 bgh-0.2.0-linux-amd64 ~/.local/bin/bgh
 mkdir -p ~/.config/systemd/user
 install -m 0644 bgh.service.example ~/.config/systemd/user/bgh.service
 systemctl --user daemon-reload

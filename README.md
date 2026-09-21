@@ -1,6 +1,6 @@
 # Blackglass Headless
 
-An independent Rust CLI and local stdio MCP client is available as a candidate
+An independent Rust CLI and local stdio MCP client is available as a production
 under [native/](native/README.md). It uses the same Blackglass Sync service but
 does not run or ship the upstream JavaScript bundle. The existing Node-based
 adapter described below remains the reference client while native release
@@ -23,7 +23,7 @@ Blackglass Server. Obsidian Publish commands are disabled.
 
 ## Supported baseline
 
-- Blackglass Headless 0.1.0
+- Blackglass Headless 0.2.0
 - Obsidian Headless 0.0.14, exact upstream commit and SHA-256 documented in
   [UPSTREAM.md](UPSTREAM.md)
 - Node.js 22 or later

@@ -1,9 +1,9 @@
 # Native service candidate evidence — 2026-09-20
 
-This record applies to the Rust client and Server changes made after the
-earlier 0.1.0 native candidate. It is **not** a new release or a
-desktop compatibility claim. The previous [candidate record](native-candidate-readiness.md)
-describes different binaries and remains historical evidence.
+This record applies to the Rust client and Server changes promoted as
+Blackglass Headless 0.2.0. It is not a desktop compatibility claim. The
+previous [candidate record](native-candidate-readiness.md) describes different
+binaries and remains historical evidence.
 
 ## Implemented in this candidate
 
@@ -45,18 +45,18 @@ describes different binaries and remains historical evidence.
   shutdown. Same-builder rebuilds yield byte-identical
   executables and binary archives. This is repeatability on those builders,
   not cross-environment reproducibility.
-- Idle service RSS during the latest smoke runs: 7,140 KiB (arm64) and 14,532 KiB
+- Idle service RSS during the release smoke runs: 7,084 KiB (arm64) and 14,540 KiB
   (amd64). These are observations, not resource budgets or peak measurements.
 
 | Asset | SHA-256 |
 | --- | --- |
-| Source archive, both architectures | `81e347eb31f9ef0ad03b3f2f39998e373255612c9281687768146795f23c99fb` |
-| `native/dist/dev-current-arm64/bgh-0.1.0-linux-arm64` | `e1747474eb062291e0937229f9c711f6d16c700a3470947b35fd2416eec80f91` |
-| `native/dist/dev-current-arm64/bgh-0.1.0-linux-arm64.tar.gz` | `f61d2ff38cc3fb932795cb2bae16e83190730e7892349f09f193d6297ef9eaef` |
-| `native/dist/dev-current-amd64/bgh-0.1.0-linux-amd64` | `c45d7c284c1793f9cb7f9e11b7f4fe6e7c41b481644f317eaf93f878048d67ee` |
-| `native/dist/dev-current-amd64/bgh-0.1.0-linux-amd64.tar.gz` | `e0d6b3ca87f1b024dc1bece64f8a8c4c0ff3afcf11d2f913a403ebc071ece5d7` |
+| Source archive, both architectures | `e1c0018809a10b2aa3934858daf68af76f34ae858bd616ad6e9da65924aa210d` |
+| `native/dist/dev-current-arm64/bgh-0.2.0-linux-arm64` | `a45906f66b8e6169586b22df32ab97960dd6869b2874004d5abdf30c20f86f3e` |
+| `native/dist/dev-current-arm64/bgh-0.2.0-linux-arm64.tar.gz` | `406da2044413e5f998d546fda1839b6153e73f55c9df57b34588a71c68199c26` |
+| `native/dist/dev-current-amd64/bgh-0.2.0-linux-amd64` | `e7083940c898b8b2547e08039c7939ed55ddbb17bf7ad36530bf9a4f385e44ac` |
+| `native/dist/dev-current-amd64/bgh-0.2.0-linux-amd64.tar.gz` | `0609ccd0e43e6c4ca6d77495aea01cfa4d12781037dfba63f5a5bddc2ce301a4` |
 
-## Release blockers
+## Known limitations
 
 No durable server-side idempotency key or general lost-ack protocol exists;
 the tested same-content replay case does not establish exactly-once behavior
@@ -66,5 +66,4 @@ kill-at-every-transition fault matrix or large-vault resource tests. Native
 collaboration/revocation and mixed packaged-desktop E2E are not qualified.
 The current service has not passed a live Hermes agent-task matrix. CLI/MCP operations remain a
 small note/search/Sync subset; attachments, move/delete tools, history restore,
-and structured conflict handling are not complete. No new version, Git-bound
-release record, signed publication, or production rollout has occurred.
+and structured conflict handling are not complete.
